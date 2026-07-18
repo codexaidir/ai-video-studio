@@ -2,10 +2,10 @@
 
 import React, { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { Mail, Lock, Loader2, Film, Sparkles, AlertCircle } from 'lucide-react';
+import { Mail, Lock, Loader2, Film, AlertCircle } from 'lucide-react';
 
 export default function LoginPage() {
-  const { signInWithPassword, sandboxMode } = useAuth();
+  const { signInWithPassword } = useAuth();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -56,21 +56,6 @@ export default function LoginPage() {
               Sign in with your administrator-assigned credentials
             </p>
           </div>
-
-          {/* Sandbox notice */}
-          {sandboxMode && (
-            <div className="bg-purple-950/20 border border-purple-800/40 rounded-xl p-3 mb-6 flex items-start gap-2.5 text-xs text-purple-300">
-              <Sparkles className="w-4 h-4 shrink-0 text-purple-400 mt-0.5" />
-              <div>
-                <p className="font-semibold">Sandbox / Demo Mode Active</p>
-                <p className="text-purple-300/80 mt-0.5">
-                  Supabase secrets not detected. Log in with{' '}
-                  <strong>any</strong> email &amp; password to preview the full
-                  workspace.
-                </p>
-              </div>
-            </div>
-          )}
 
           {/* Error banner */}
           {error && (
@@ -134,7 +119,7 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {/* Submit — NO SIGNUP BUTTON */}
+            {/* Submit */}
             <button
               id="login-btn"
               type="submit"

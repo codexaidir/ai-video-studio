@@ -1,2 +1,13 @@
 skills/
 node_modules/
+.next/
+.env
+.env.local
+db/*.db
+reference/
+gpu_backend/
+deploy*.py
+check_caddy.py
+dev.log
+upload/
+*.pyc

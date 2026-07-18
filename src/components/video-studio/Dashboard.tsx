@@ -20,18 +20,12 @@ import {
 
 const POLL_INTERVAL_MS = 5_000;
 
-const SAMPLE_VIDEOS = [
-  'https://assets.mixkit.co/videos/preview/mixkit-stars-in-space-background-1611-large.mp4',
-  'https://assets.mixkit.co/videos/preview/mixkit-abstract-laser-lights-background-glow-41913-large.mp4',
-  'https://assets.mixkit.co/videos/preview/mixkit-flowing-neon-particles-and-lines-41914-large.mp4',
-];
-
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { user, signOut, sandboxMode } = useAuth();
+  const { user, signOut } = useAuth();
 
   // ---- State ----
   const [prompt, setPrompt] = useState('');
@@ -51,15 +45,6 @@ export default function Dashboard() {
     };
   }, []);
 
-  // ---- Sandbox simulation tick sequence ----
-  const SANDBOX_TICKS = [
-    'Warm start sequence triggered… Allocating VRAM (12.2 GB / 24 GB)',
-    'Stable Diffusion model loaded. Rendering frame 12/64… [4.8 it/s]',
-    'Rendering frame 38/64… [4.9 it/s]',
-    'Rendering frame 60/64… Synthesis of temporal motion maps in progress.',
-    'Compiling raw frames to H.264 MP4 wrapper… 24 fps',
-  ];
-
   // ---- Generate Video ----
   const handleGenerate = useCallback(
     async (e?: React.FormEvent) => {
@@ -72,82 +57,59 @@ export default function Dashboard() {
       setPollCount(0);
       setStatusText('Initiating generation queue on GPU cluster…');
 
-      const generatedJobId = `job_${Math.random().toString(36).slice(2, 11)}`;
-      setJobId(generatedJobId);
+      try {
+        const { data, error } = await supabase.functions.invoke('generate-video', {
+          body: { prompt: prompt.trim() },
+        });
 
-      if (sandboxMode) {
-        // ---- Sandbox simulation ----
-        let tick = 0;
-        pollRef.current = setInterval(() => {
-          tick += 1;
+        if (error) throw new Error(error.message || 'Edge function error');
+
+        const realJobId = data?.jobId;
+        if (!realJobId) throw new Error('No jobId returned from GPU server');
+        setJobId(realJobId);
+        setStatusText('Request queued. Polling GPU node…');
+
+        // Start polling
+        pollRef.current = setInterval(async () => {
           setPollCount((c) => c + 1);
+          try {
+            const { data: sData, error: sErr } = await supabase.functions.invoke(
+              'check-status',
+              { body: { jobId: realJobId } }
+            );
 
-          if (tick <= SANDBOX_TICKS.length) {
-            setStatusText(SANDBOX_TICKS[tick - 1]);
-          } else {
-            // Done
-            if (pollRef.current) clearInterval(pollRef.current);
-            const pick = SAMPLE_VIDEOS[Math.floor(Math.random() * SAMPLE_VIDEOS.length)];
-            setVideoUrl(pick);
-            setProcessing(false);
-            setStatusText('Completed successfully!');
-          }
-        }, 5000);
-      } else {
-        // ---- Real Supabase Edge Function integration ----
-        try {
-          const { data, error } = await supabase.functions.invoke('generate-video', {
-            body: { prompt: prompt.trim() },
-          });
-
-          if (error) throw new Error(error.message || 'Edge function error');
-
-          const realJobId = data?.jobId || generatedJobId;
-          setJobId(realJobId);
-          setStatusText('Request queued. Polling GPU node…');
-
-          // Start polling
-          pollRef.current = setInterval(async () => {
-            setPollCount((c) => c + 1);
-            try {
-              const { data: sData, error: sErr } = await supabase.functions.invoke(
-                'check-status',
-                { body: { jobId: realJobId } }
-              );
-
-              if (sErr) {
-                console.warn('Polling transient error:', sErr);
-                setStatusText('Awaiting cluster response… [Handshaking network]');
-                return;
-              }
-
-              const status = sData?.status || 'processing';
-              const logs = sData?.progressLogs || 'GPU is rendering frames…';
-              const url = sData?.videoUrl as string | undefined;
-
-              setStatusText(logs);
-
-              if (status === 'completed' && url) {
-                if (pollRef.current) clearInterval(pollRef.current);
-                setVideoUrl(url);
-                setProcessing(false);
-              } else if (status === 'failed') {
-                if (pollRef.current) clearInterval(pollRef.current);
-                setErrorMsg(sData?.error || 'GPU rendering failed.');
-                setProcessing(false);
-              }
-            } catch (err: unknown) {
-              console.error('Polling error:', err);
+            if (sErr) {
+              console.warn('Polling transient error:', sErr);
+              setStatusText('Awaiting cluster response…');
+              return;
             }
-          }, POLL_INTERVAL_MS);
-        } catch (err: unknown) {
-          const msg = err instanceof Error ? err.message : 'Could not connect to the remote GPU render node.';
-          setErrorMsg(msg);
-          setProcessing(false);
-        }
+
+            const status = sData?.status || 'processing';
+            const logs = sData?.progressLogs || 'GPU is rendering frames…';
+            const url = sData?.videoUrl as string | undefined;
+
+            setStatusText(logs);
+
+            if (status === 'completed' && url) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setVideoUrl(url);
+              setProcessing(false);
+            } else if (status === 'failed') {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setErrorMsg(sData?.error || 'GPU rendering failed.');
+              setProcessing(false);
+            }
+          } catch (err: unknown) {
+            console.error('Polling error:', err);
+          }
+        }, POLL_INTERVAL_MS);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : 'Could not connect to the remote GPU render node.';
+        setErrorMsg(msg);
+        setProcessing(false);
       }
     },
-    [prompt, processing, sandboxMode]
+    [prompt, processing]
   );
 
   // ---- Clear / Reset ----
@@ -193,21 +155,17 @@ export default function Dashboard() {
 
           {/* Right side */}
           <div className="flex items-center gap-4">
-            {/* Sandbox badge */}
+            {/* Live API badge */}
             <div className="hidden sm:flex items-center gap-2 bg-[#141418] border border-[#24242B] rounded-xl px-3 py-1.5 text-xs">
-              <span
-                className={`w-2 h-2 rounded-full ${sandboxMode ? 'bg-amber-400' : 'bg-emerald-500 animate-pulse'}`}
-              />
-              <span className="text-gray-400">
-                {sandboxMode ? 'Sandbox Mode' : 'Live API'}
-              </span>
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-gray-400">Live API</span>
             </div>
 
             {/* User email */}
             <div className="flex items-center gap-2 bg-[#121216] px-3 py-1.5 rounded-xl border border-[#1E1E24]">
               <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               <span className="text-xs text-gray-300 font-mono max-w-[160px] truncate">
-                {user?.email ?? 'user@example.com'}
+                {user?.email ?? ''}
               </span>
             </div>
 
@@ -279,21 +237,20 @@ export default function Dashboard() {
             <h3 className="font-semibold text-gray-300">GPU Node Info</h3>
             <p className="leading-relaxed">
               Prompts are proxied through Supabase Edge Functions to a private
-              FastAPI server. Rendered .mp4 files are stored in a Supabase
-              Storage bucket.
+              FastAPI server. Rendered .mp4 files are stored in Supabase Storage.
             </p>
             <div className="p-2.5 bg-black/40 rounded-lg border border-white/5 space-y-1 font-mono text-[10px]">
               <div className="flex justify-between">
                 <span>Model:</span>
-                <span className="text-purple-400">StableDiffusion-v2.1-SVD</span>
+                <span className="text-purple-400">Stable Diffusion v1.5</span>
               </div>
               <div className="flex justify-between">
-                <span>VRAM:</span>
-                <span className="text-emerald-400">Active (Auto-scale)</span>
+                <span>GPU:</span>
+                <span className="text-emerald-400">NVIDIA RTX 3090 24GB</span>
               </div>
               <div className="flex justify-between">
                 <span>Output:</span>
-                <span className="text-gray-300">H.264 / 24 FPS / 1024×576</span>
+                <span className="text-gray-300">H.264 / 12 FPS / 512×512</span>
               </div>
             </div>
           </div>
@@ -468,11 +425,11 @@ export default function Dashboard() {
           </span>
           <div className="flex gap-4">
             <span className="hover:text-purple-400 transition-colors">
-              Server Node: GPU-Node-01-A100
+              Server Node: GPU-Node-01-RTX3090
             </span>
             <span>•</span>
             <span className="hover:text-purple-400 transition-colors">
-              Storage: supabase-bucket/generated-videos
+              Storage: Supabase / generated-videos
             </span>
           </div>
         </div>
