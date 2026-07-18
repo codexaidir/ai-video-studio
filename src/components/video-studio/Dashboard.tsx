@@ -21,11 +21,52 @@ import {
 const POLL_INTERVAL_MS = 5_000;
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+async function callEdgeFunction(
+  functionName: string,
+  body: Record<string, unknown>,
+  accessToken: string,
+): Promise<{ data: Record<string, unknown>; ok: boolean; status: number; errMsg?: string }> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const url = `${supabaseUrl}/functions/v1/${functionName}`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+      apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    },
+    body: JSON.stringify(body),
+  });
+
+  let data: Record<string, unknown> = {};
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON response – ignore */
+  }
+
+  if (!res.ok) {
+    return {
+      data,
+      ok: false,
+      status: res.status,
+      errMsg: (data as { error?: string }).error || `Edge function returned ${res.status}`,
+    };
+  }
+
+  return { data, ok: true, status: res.status };
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { user, signOut } = useAuth();
+  const { user, signOut, session } = useAuth();
 
   // ---- State ----
   const [prompt, setPrompt] = useState('');
@@ -51,6 +92,12 @@ export default function Dashboard() {
       e?.preventDefault();
       if (!prompt.trim() || processing) return;
 
+      const token = session?.access_token;
+      if (!token) {
+        setErrorMsg('Authentication token not found. Please log in again.');
+        return;
+      }
+
       setProcessing(true);
       setErrorMsg(null);
       setVideoUrl(null);
@@ -58,13 +105,15 @@ export default function Dashboard() {
       setStatusText('Initiating generation queue on GPU cluster…');
 
       try {
-        const { data, error } = await supabase.functions.invoke('generate-video', {
-          body: { prompt: prompt.trim() },
-        });
+        const { data, ok, errMsg } = await callEdgeFunction(
+          'generate-video',
+          { prompt: prompt.trim() },
+          token,
+        );
 
-        if (error) throw new Error(error.message || 'Edge function error');
+        if (!ok) throw new Error(errMsg || 'Edge function error');
 
-        const realJobId = data?.jobId;
+        const realJobId = data?.jobId as string | undefined;
         if (!realJobId) throw new Error('No jobId returned from GPU server');
         setJobId(realJobId);
         setStatusText('Request queued. Polling GPU node…');
@@ -73,19 +122,30 @@ export default function Dashboard() {
         pollRef.current = setInterval(async () => {
           setPollCount((c) => c + 1);
           try {
-            const { data: sData, error: sErr } = await supabase.functions.invoke(
+            // Re-read token in case it was refreshed
+            const { data: sessionData } = await supabase.auth.getSession();
+            const currentToken = sessionData.session?.access_token;
+            if (!currentToken) {
+              if (pollRef.current) clearInterval(pollRef.current);
+              setErrorMsg('Session expired. Please log in again.');
+              setProcessing(false);
+              return;
+            }
+
+            const { data: sData, ok: sOk, errMsg: sErr } = await callEdgeFunction(
               'check-status',
-              { body: { jobId: realJobId } }
+              { jobId: realJobId },
+              currentToken,
             );
 
-            if (sErr) {
+            if (!sOk) {
               console.warn('Polling transient error:', sErr);
               setStatusText('Awaiting cluster response…');
               return;
             }
 
-            const status = sData?.status || 'processing';
-            const logs = sData?.progressLogs || 'GPU is rendering frames…';
+            const status = (sData?.status as string) || 'processing';
+            const logs = (sData?.progressLogs as string) || 'GPU is rendering frames…';
             const url = sData?.videoUrl as string | undefined;
 
             setStatusText(logs);
@@ -96,7 +156,7 @@ export default function Dashboard() {
               setProcessing(false);
             } else if (status === 'failed') {
               if (pollRef.current) clearInterval(pollRef.current);
-              setErrorMsg(sData?.error || 'GPU rendering failed.');
+              setErrorMsg((sData?.error as string) || 'GPU rendering failed.');
               setProcessing(false);
             }
           } catch (err: unknown) {
@@ -109,7 +169,7 @@ export default function Dashboard() {
         setProcessing(false);
       }
     },
-    [prompt, processing]
+    [prompt, processing, session?.access_token],
   );
 
   // ---- Clear / Reset ----
