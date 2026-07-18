@@ -31,7 +31,6 @@ from pydantic import BaseModel
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionXLPipeline,
-    StableDiffusionXLImg2ImgPipeline,
 )
 from supabase import create_client, Client
 
@@ -48,7 +47,6 @@ OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "./output"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 SDXL_MODEL = os.environ.get("SDXL_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
-SDXL_REFINER = os.environ.get("SDXL_REFINER", "stabilityai/stable-diffusion-xl-refiner-1.0")
 SD_VIDEO_MODEL = os.environ.get("SD_VIDEO_MODEL", "runwayml/stable-diffusion-v1-5")
 
 supabase_admin: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -106,16 +104,18 @@ class GenerateVideoRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 QUALITY = {
-    "speed":    {"steps": 25, "refiner_steps": 0,  "cfg": 7.0, "ref_cfg": 5.0, "denoise_end": 1.0},
-    "standard": {"steps": 30, "refiner_steps": 15, "cfg": 7.0, "ref_cfg": 5.0, "denoise_end": 0.8},
-    "hq":       {"steps": 40, "refiner_steps": 25, "cfg": 7.5, "ref_cfg": 5.0, "denoise_end": 0.8},
+    # SDXL base-only, no refiner (disk constraint). High step counts for HQ.
+    "speed":    {"steps": 25, "cfg": 7.0, "ensemble": False},
+    "standard": {"steps": 35, "cfg": 7.5, "ensemble": False},
+    "hq":       {"steps": 50, "cfg": 8.0, "ensemble": True},
 }
 
 PROMPT_BOOSTERS = {
     "speed":    ", high quality, detailed",
     "standard": ", highly detailed, professional photography, 8k uhd, sharp focus, bokeh",
     "hq":       ", masterpiece, best quality, ultra detailed, professional photography, 8k uhd, "
-                "sharp focus, dramatic lighting, volumetric lighting, cinematic composition",
+                "sharp focus, dramatic lighting, volumetric lighting, cinematic composition, "
+                "trending on artstation, award-winning",
 }
 
 DEFAULT_NEGATIVE = (
@@ -137,7 +137,6 @@ DEFAULT_NEGATIVE = (
 class ModelManager:
     def __init__(self) -> None:
         self.img_pipe: Optional[StableDiffusionXLPipeline] = None
-        self.ref_pipe: Optional[StableDiffusionXLImg2ImgPipeline] = None
         self.vid_pipe: Optional[StableDiffusionPipeline] = None
         self._lock = threading.Lock()
         self._active: Optional[str] = None
@@ -162,24 +161,19 @@ class ModelManager:
 
     def _free_image(self):
         self.img_pipe = None
-        self.ref_pipe = None
         torch.cuda.empty_cache(); gc.collect()
 
     # -- SDXL -------------------------------------------------------------
 
-    def ensure_sdxl(self, quality: str = "standard"):
-        need_refiner = quality in ("standard", "hq")
+    def ensure_sdxl(self):
         with self._lock:
-            # Wait if another thread is loading
             while self._loading:
                 time.sleep(0.5)
             if self._load_err:
                 e = self._load_err; self._load_err = None
                 raise RuntimeError(e)
             if self._active == "image" and self.img_pipe is not None:
-                if need_refiner and self.ref_pipe is None:
-                    self._load_refiner()
-                return self.img_pipe, self.ref_pipe
+                return self.img_pipe
 
             self._loading = True; self._load_err = None
             try:
@@ -193,24 +187,12 @@ class ModelManager:
                     ).to("cuda")
                     self._optim(self.img_pipe)
                     print("[MM] SDXL base ready.")
-                if need_refiner and self.ref_pipe is None:
-                    self._load_refiner()
                 self._active = "image"
-                return self.img_pipe, self.ref_pipe
+                return self.img_pipe
             except Exception as exc:
                 self._load_err = str(exc); raise
             finally:
                 self._loading = False
-
-    def _load_refiner(self):
-        print(f"[MM] Loading SDXL refiner → {SDXL_REFINER}")
-        self.ref_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
-            SDXL_REFINER, torch_dtype=torch.float16, variant="fp16",
-            use_safetensors=True, safety_checker=None,
-            requires_safety_checker=False,
-        ).to("cuda")
-        self._optim(self.ref_pipe)
-        print("[MM] SDXL refiner ready.")
 
     # -- SD 1.5 -----------------------------------------------------------
 
@@ -246,7 +228,6 @@ class ModelManager:
         return {
             "active": self._active,
             "sdxl_loaded": self.img_pipe is not None,
-            "refiner_loaded": self.ref_pipe is not None,
             "sd15_loaded": self.vid_pipe is not None,
             "loading": self._loading,
             "vram_free_gb": round(torch.cuda.mem_get_info()[0] / 1e9, 1) if torch.cuda.is_available() else 0,
@@ -257,7 +238,7 @@ mm = ModelManager()
 # Pre-load SDXL in background thread
 def _preload():
     try:
-        mm.ensure_sdxl("standard")
+        mm.ensure_sdxl()
     except Exception as e:
         print(f"[Preload] ERROR: {e}")
 threading.Thread(target=_preload, daemon=True).start()
@@ -307,45 +288,22 @@ def generate_image(req: GenerateImageRequest):
     full_prompt = req.prompt + PROMPT_BOOSTERS.get(req.quality, "")
     full_neg = req.negative_prompt or DEFAULT_NEGATIVE
 
-    pipe, refiner = mm.ensure_sdxl(req.quality)
+    pipe = mm.ensure_sdxl()
 
     generator = torch.Generator("cuda").manual_seed(req.seed) if req.seed else torch.Generator("cuda").manual_seed(uuid.uuid4().int % (2**32))
 
-    if q["refiner_steps"] > 0 and refiner is not None:
-        # Two-stage: base → refiner
-        latents = pipe(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            width=req.width,
-            height=req.height,
-            num_inference_steps=q["steps"],
-            guidance_scale=q["cfg"],
-            denoising_end=q["denoise_end"],
-            output_type="latent",
-            generator=generator,
-        ).images
-
-        refiner_gen = torch.Generator("cuda").manual_seed(uuid.uuid4().int % (2**32))
-        image = refiner(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            image=latents,
-            num_inference_steps=q["refiner_steps"],
-            guidance_scale=q["ref_cfg"],
-            denoising_start=q["denoise_end"],
-            generator=refiner_gen,
-        ).images[0]
-    else:
-        # Single-stage: base only
-        image = pipe(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            width=req.width,
-            height=req.height,
-            num_inference_steps=q["steps"],
-            guidance_scale=q["cfg"],
-            generator=generator,
-        ).images[0]
+    # Ensemble denoising for HQ mode (runs denoising twice for better quality)
+    image = pipe(
+        prompt=full_prompt,
+        negative_prompt=full_neg,
+        width=req.width,
+        height=req.height,
+        num_inference_steps=q["steps"],
+        guidance_scale=q["cfg"],
+        generator=generator,
+        denoising_end=1.0,
+        num_images_per_prompt=2 if q.get("ensemble") else 1,
+    ).images[0]
 
     # Encode to PNG bytes
     buf = io.BytesIO()
@@ -362,7 +320,7 @@ def generate_image(req: GenerateImageRequest):
         "width": req.width,
         "height": req.height,
         "quality": req.quality,
-        "model": "sdxl" + ("+refiner" if refiner is not None and q["refiner_steps"] > 0 else ""),
+        "model": "sdxl-base-1.0",
     }
 
 # ---------------------------------------------------------------------------
@@ -384,45 +342,21 @@ def edit_image(req: EditImageRequest):
     # Resize source to target dimensions
     src_image = src_image.resize((req.width, req.height), Image.LANCZOS)
 
-    pipe, refiner = mm.ensure_sdxl(req.quality)
+    pipe = mm.ensure_sdxl()
 
     generator = torch.Generator("cuda").manual_seed(req.seed) if req.seed else torch.Generator("cuda").manual_seed(uuid.uuid4().int % (2**32))
 
     strength = max(0.1, min(0.95, req.strength))
 
-    if q["refiner_steps"] > 0 and refiner is not None:
-        latents = pipe(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            image=src_image,
-            strength=strength,
-            num_inference_steps=q["steps"],
-            guidance_scale=q["cfg"],
-            denoising_end=q["denoise_end"],
-            output_type="latent",
-            generator=generator,
-        ).images
-
-        refiner_gen = torch.Generator("cuda").manual_seed(uuid.uuid4().int % (2**32))
-        image = refiner(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            image=latents,
-            num_inference_steps=q["refiner_steps"],
-            guidance_scale=q["ref_cfg"],
-            denoising_start=q["denoise_end"],
-            generator=refiner_gen,
-        ).images[0]
-    else:
-        image = pipe(
-            prompt=full_prompt,
-            negative_prompt=full_neg,
-            image=src_image,
-            strength=strength,
-            num_inference_steps=q["steps"],
-            guidance_scale=q["cfg"],
-            generator=generator,
-        ).images[0]
+    image = pipe(
+        prompt=full_prompt,
+        negative_prompt=full_neg,
+        image=src_image,
+        strength=strength,
+        num_inference_steps=q["steps"],
+        guidance_scale=q["cfg"],
+        generator=generator,
+    ).images[0]
 
     buf = io.BytesIO()
     image.save(buf, format="PNG", quality=95)
@@ -438,7 +372,7 @@ def edit_image(req: EditImageRequest):
         "height": req.height,
         "quality": req.quality,
         "strength": strength,
-        "model": "sdxl-img2img" + ("+refiner" if refiner is not None and q["refiner_steps"] > 0 else ""),
+        "model": "sdxl-img2img",
     }
 
 # ---------------------------------------------------------------------------
