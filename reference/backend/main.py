@@ -249,17 +249,22 @@ threading.Thread(target=_preload, daemon=True).start()
 
 def _upload_bytes(data: bytes, remote_name: str, content_type: str) -> str:
     """Upload raw bytes and return the public URL."""
-    res = supabase_admin.storage.from_(STORAGE_BUCKET).upload(
-        remote_name, data, {"content-type": content_type, "upsert": "true"},
-    )
-    if res.get("error"):
-        # Fallback: remove then re-upload
-        supabase_admin.storage.from_(STORAGE_BUCKET).remove([remote_name])
-        res = supabase_admin.storage.from_(STORAGE_BUCKET).upload(
-            remote_name, data, {"content-type": content_type},
+    try:
+        supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+            remote_name, data, {"content-type": content_type, "upsert": "true"},
         )
-        if res.get("error"):
-            raise RuntimeError(f"Storage upload failed: {res['error']}")
+    except Exception:
+        # Fallback: remove then re-upload
+        try:
+            supabase_admin.storage.from_(STORAGE_BUCKET).remove([remote_name])
+        except Exception:
+            pass
+        try:
+            supabase_admin.storage.from_(STORAGE_BUCKET).upload(
+                remote_name, data, {"content-type": content_type},
+            )
+        except Exception as e:
+            raise RuntimeError(f"Storage upload failed: {e}")
     return supabase_admin.storage.from_(STORAGE_BUCKET).get_public_url(remote_name)
 
 # ---------------------------------------------------------------------------
