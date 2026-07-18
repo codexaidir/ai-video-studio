@@ -24,3 +24,4 @@
 [02:31:04.188] Browser WARN    [AI Video Studio] Supabase env vars are missing or placeholders. Running in sandbox/demo mode. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect to real backend.
 [02:33:17.580] Browser WARN    [AI Video Studio] Supabase env vars are missing or placeholders. Running in sandbox/demo mode. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect to real backend.
 [02:35:03.267] Browser WARN    [AI Video Studio] Supabase env vars are missing or placeholders. Running in sandbox/demo mode. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect to real backend.
+[02:37:23.353] Browser WARN    [AI Video Studio] Supabase env vars are missing or placeholders. Running in sandbox/demo mode. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY to connect to real backend.
