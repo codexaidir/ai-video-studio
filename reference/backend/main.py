@@ -336,7 +336,9 @@ def generate_image(req: GenerateImageRequest):
 def edit_image(req: EditImageRequest):
     q = QUALITY.get(req.quality, QUALITY["standard"])
     full_prompt = req.prompt + PROMPT_BOOSTERS.get(req.quality, "")
-    full_neg = req.negative_prompt or DEFAULT_NEGATIVE
+    # Auto-append face preservation terms to negative prompt for img2img
+    face_preserve_neg = "different face, different person, changed identity, altered facial features, deformed face"
+    full_neg = (req.negative_prompt or DEFAULT_NEGATIVE) + ", " + face_preserve_neg
 
     # Download source image
     try:

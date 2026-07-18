@@ -134,7 +134,7 @@ export default function Dashboard() {
   const [editNegPrompt, setEditNegPrompt] = useState('');
   const [editShowNeg, setEditShowNeg] = useState(false);
   const [editSizeIdx, setEditSizeIdx] = useState(0);
-  const [editStrength, setEditStrength] = useState(0.6);
+  const [editStrength, setEditStrength] = useState(0.35);
   const [editQuality, setEditQuality] = useState<string>('standard');
   const [editGenerating, setEditGenerating] = useState(false);
   const [editResultUrl, setEditResultUrl] = useState<string | null>(null);
@@ -528,8 +528,9 @@ export default function Dashboard() {
                         onChange={(e) => setEditStrength(Number(e.target.value))} disabled={editGenerating}
                         className="w-full accent-purple-500 cursor-pointer" />
                       <div className="flex justify-between text-[9px] text-gray-600 mt-1">
-                        <span>Subtle</span><span>Transform</span>
+                        <span>Subtle (face safe)</span><span>Transform</span>
                       </div>
+                      <p className="text-[10px] text-amber-400/70 mt-1">💡 Keep below 0.40 to preserve face identity</p>
                     </div>
 
                     {/* Size */}
