@@ -20,6 +20,7 @@ import {
   Gem,
   X,
   ChevronDown,
+  Shield,
   Settings2,
   Trash2,
   ImagePlus,
@@ -42,9 +43,9 @@ const IMAGE_SIZES = [
 ] as const;
 
 const QUALITY_PRESETS = [
-  { id: 'speed', label: 'Speed', icon: Zap, desc: '~5 s', color: 'text-emerald-400 border-emerald-500/30 bg-emerald-950/20' },
-  { id: 'standard', label: 'Standard', icon: Sparkles, desc: '~15 s', color: 'text-purple-400 border-purple-500/30 bg-purple-950/20' },
-  { id: 'hq', label: 'HQ', icon: Gem, desc: '~30 s', color: 'text-amber-400 border-amber-500/30 bg-amber-950/20' },
+  { id: 'speed', label: 'Speed', icon: Zap, desc: '~5s base', color: 'text-emerald-400 border-emerald-500/30 bg-emerald-950/20' },
+  { id: 'standard', label: 'Standard', icon: Sparkles, desc: '~20s base+refiner', color: 'text-purple-400 border-purple-500/30 bg-purple-950/20' },
+  { id: 'hq', label: 'HQ', icon: Gem, desc: '~40s base+refiner', color: 'text-amber-400 border-amber-500/30 bg-amber-950/20' },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -136,6 +137,7 @@ export default function Dashboard() {
   const [editSizeIdx, setEditSizeIdx] = useState(0);
   const [editStrength, setEditStrength] = useState(0.35);
   const [editQuality, setEditQuality] = useState<string>('standard');
+  const [editFaceLock, setEditFaceLock] = useState(true);
   const [editGenerating, setEditGenerating] = useState(false);
   const [editResultUrl, setEditResultUrl] = useState<string | null>(null);
   const [editError, setEditError] = useState<string | null>(null);
@@ -211,9 +213,10 @@ export default function Dashboard() {
         height: size.h,
         strength: editStrength,
         quality: editQuality,
+        face_lock: editFaceLock,
       },
       token,
-      editQuality === 'hq' ? 180_000 : 120_000,
+      editFaceLock ? 180_000 : 120_000,
     );
 
     setEditGenerating(false);
@@ -518,6 +521,20 @@ export default function Dashboard() {
                       )}
                     </div>
 
+                    {/* Face Lock toggle */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-3.5 h-3.5 text-cyan-400" />
+                        <label className="text-xs font-medium text-gray-400">FACE LOCK (IP-Adapter)</label>
+                      </div>
+                      <button
+                        onClick={() => setEditFaceLock(!editFaceLock)} disabled={editGenerating}
+                        className={`relative w-10 h-5.5 rounded-full transition-all duration-200 cursor-pointer disabled:opacity-40 ${editFaceLock ? 'bg-cyan-500' : 'bg-gray-600'}`}>
+                        <span className={`absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white shadow transition-transform duration-200 ${editFaceLock ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-cyan-400/60 mt-0.5">{editFaceLock ? '🔒 Face identity preserved during edit' : '⚠️ Face may change — full creative freedom'}</p>
+
                     {/* Strength slider */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
@@ -528,9 +545,9 @@ export default function Dashboard() {
                         onChange={(e) => setEditStrength(Number(e.target.value))} disabled={editGenerating}
                         className="w-full accent-purple-500 cursor-pointer" />
                       <div className="flex justify-between text-[9px] text-gray-600 mt-1">
-                        <span>Subtle (face safe)</span><span>Transform</span>
+                        <span>Subtle</span><span>Transform</span>
                       </div>
-                      <p className="text-[10px] text-amber-400/70 mt-1">💡 Keep below 0.40 to preserve face identity</p>
+                      {editFaceLock && <p className="text-[10px] text-cyan-400/70 mt-1">💡 Face Lock active — safe to use higher strength</p>}
                     </div>
 
                     {/* Size */}

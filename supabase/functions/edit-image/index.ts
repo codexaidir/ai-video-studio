@@ -44,6 +44,7 @@ serve(async (req) => {
       strength = 0.6,
       quality = "standard",
       seed,
+      face_lock = true,
     } = body
 
     if (!image_url || typeof image_url !== "string") {
@@ -75,6 +76,7 @@ serve(async (req) => {
         height: Number(height),
         strength: Math.max(0.1, Math.min(0.95, Number(strength) || 0.6)),
         quality: quality || "standard",
+        face_lock: !!face_lock,
         seed: seed ? Number(seed) : null,
       }),
     })
